@@ -342,6 +342,35 @@ object MovieBoxApiClient {
             (sObj.toString().contains("ugc-anime.com", ignoreCase = true) && sObj.toString().contains("MiniTV", ignoreCase = true)) ||
             title.contains("Short", ignoreCase = true) || genre.contains("Short", ignoreCase = true)
 
+        val dubsArray = sObj.optJSONArray("dubs")
+        val parsedDubs = mutableListOf<com.example.data.model.DubLanguage>()
+        if (dubsArray != null) {
+            for (d in 0 until dubsArray.length()) {
+                val dObj = dubsArray.optJSONObject(d) ?: continue
+                val orig = dObj.optBoolean("original", false)
+                val dSubjId = dObj.optString("subjectId").ifBlank { dObj.optString("id") }.ifBlank { if (orig) subjectId else "" }
+                val lanName = dObj.optString("lanName")
+                val lanCode = dObj.optString("lanCode")
+                val dDetailPath = dObj.optString("detailPath")
+                if (lanName.isNotBlank() || dSubjId.isNotBlank()) {
+                    parsedDubs.add(
+                        com.example.data.model.DubLanguage(
+                            subjectId = dSubjId,
+                            lanName = lanName,
+                            lanCode = lanCode,
+                            original = orig,
+                            detailPath = dDetailPath
+                        )
+                    )
+                }
+            }
+        }
+
+        val totalEpCount = Regex("""(\d+)\s*(?:EP|ep|Episodes|Ep)""").find(corner)?.groupValues?.get(1)?.toIntOrNull()
+            ?: sObj.optInt("totalEpisodes", 0).takeIf { it > 0 }
+            ?: sObj.optInt("maxEp", 0).takeIf { it > 0 }
+            ?: 0
+
         return MovieItem(
             id = subjectId,
             title = title,
@@ -361,7 +390,9 @@ object MovieBoxApiClient {
             source = source,
             uploadBy = uploadBy,
             coverWidth = coverWidth,
-            coverHeight = coverHeight
+            coverHeight = coverHeight,
+            dubs = parsedDubs,
+            totalEpisodes = totalEpCount
         )
     }
 
@@ -594,6 +625,28 @@ object MovieBoxApiClient {
                                 seasonNumber = se,
                                 maxEp = maxEp,
                                 resolutions = resList
+                            )
+                        )
+                    }
+                }
+
+                // If seasons array wasn't explicitly populated (e.g. for short TV dramas), extract maxEp from resource/data/subj/corner
+                if (seasonInfoList.isEmpty()) {
+                    val directMaxEp = resourceObj?.optInt("maxEp", 0)?.takeIf { it > 0 }
+                        ?: dataObj.optInt("maxEp", 0).takeIf { it > 0 }
+                        ?: subj.optInt("maxEp", 0).takeIf { it > 0 }
+                        ?: subj.optInt("episodeCount", 0).takeIf { it > 0 }
+                        ?: subj.optInt("totalEpisodes", 0).takeIf { it > 0 }
+                        ?: resourceObj?.optInt("episodeCount", 0)?.takeIf { it > 0 }
+                        ?: Regex("""(\d+)\s*(?:EP|ep|Episodes|Ep)""").find(corner)?.groupValues?.get(1)?.toIntOrNull()
+                        ?: 0
+
+                    if (directMaxEp > 0) {
+                        seasonInfoList.add(
+                            SeasonInfo(
+                                seasonNumber = 1,
+                                maxEp = directMaxEp,
+                                resolutions = emptyList()
                             )
                         )
                     }

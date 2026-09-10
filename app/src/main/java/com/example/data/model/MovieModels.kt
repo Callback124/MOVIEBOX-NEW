@@ -142,7 +142,7 @@ data class CategorySection(
         }
 
     val isShortsSection: Boolean
-        get() = isHotShortTvSection
+        get() = isHotShortTvSection || isVskitSection
 }
 
 data class HomeFeedData(

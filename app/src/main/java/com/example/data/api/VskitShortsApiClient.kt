@@ -21,7 +21,7 @@ object VskitShortsApiClient {
     private const val SITE_DOMAIN = "https://vskit.online"
     private const val SITE_TYPE = "VskitWeb"
     private const val AUTH_BEARER =
-        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjg4MzIwODI4ODI2NjQ1ODI4ODgsImF0cCI6MywiZXh0IjoiMTc4OTAzOTc2NiIsImV4cCI6MTc5NjgxNTc2NiwiaWF0IjoxNzg5MDM5NDY2fQ.VyjP9DP2BT8ZB-0f5SnZsf8ZXy_nRNmO9RLpYZedKGM"
+        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1aWQiOjc5MTY5NjY1MDE2OTIyMDQ4NDgsImF0cCI6MywiZXh0IjoiMTc4OTAxNDE4OSIsImV4cCI6MTc5Njc5MDE4OSwiaWF0IjoxNzg5MDEzODg5fQ.9-OmrTY-your3sdzcSvH-YjFc-WgmhJL7YmtiaDY42k"
     private const val USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
 
@@ -39,13 +39,12 @@ object VskitShortsApiClient {
             .addHeader("authorization", AUTH_BEARER)
             .addHeader("X-Site-Domain", SITE_DOMAIN)
             .addHeader("X-Site-Type", SITE_TYPE)
-            .addHeader("x-vip-restrict", "1")
             .addHeader("X-PM-Level", "3")
             .addHeader("X-PM-Active", "true")
             .addHeader("x-client-info", "{\"timezone\":\"Asia/Calcutta\"}")
             .addHeader("x-request-lang", "en")
-            .addHeader("origin", "https://vskit.online")
-            .addHeader("referer", "https://vskit.online/")
+            .addHeader("origin", "https://movieboxph.org")
+            .addHeader("referer", "https://movieboxph.org/quick-shorts")
             .addHeader("User-Agent", USER_AGENT)
             .addHeader("Accept", "application/json, text/plain, */*")
             .build()
@@ -173,7 +172,7 @@ object VskitShortsApiClient {
         val episodes = mutableListOf<VskitEpisodeItem>()
         var page = 1
         var hasMore = true
-        val maxPages = 20 // Supports up to 20 * 50 = 1000 episodes
+        val maxPages = 50 // Supports up to 50 * 50 = 2500 episodes so all episodes load
 
         try {
             while (hasMore && page <= maxPages) {
@@ -194,9 +193,11 @@ object VskitShortsApiClient {
                     val miniId = itObj.optString("miniId", "")
                     val videoObj = itObj.optJSONObject("video")
                     val videoAddress = videoObj?.optJSONObject("videoAddress")
-                    val videoUrl = videoAddress?.optString("url", "") ?: ""
+                    val videoUrl = videoAddress?.optString("url", "")
+                        ?: videoObj?.optString("url", "")
+                        ?: ""
                     val duration = videoAddress?.optInt("duration", 0) ?: 0
-                    val resolutions = videoAddress?.optString("resolutions", "720") ?: "720"
+                    val resolutions = videoAddress?.optString("resolutions", "480") ?: "480"
                     val coverObj = itObj.optJSONObject("cover")
                     val coverUrl = coverObj?.optString("url", "") ?: ""
 
@@ -335,6 +336,96 @@ object VskitShortsApiClient {
             coverWidth = coverWidth,
             coverHeight = coverHeight,
             totalEpisodes = totalEp,
+            isVskitServer = true
+        )
+    }
+
+    /**
+     * Fetch filter shorts dramas from wefeed-h5api-bff/filter (channelId=1012)
+     * Supports infinite progressive pagination
+     */
+    suspend fun fetchFilterShortsList(
+        page: Int = 1,
+        perPage: Int = 24,
+        channelId: Int = 1012
+    ): Pair<List<MovieItem>, Boolean> = withContext(Dispatchers.IO) {
+        val url = "$BASE_URL/filter?page=$page&perPage=$perPage&channelId=$channelId"
+        try {
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("authorization", AUTH_BEARER)
+                .addHeader("origin", "https://movieboxph.org")
+                .addHeader("referer", "https://movieboxph.org/quick-shorts")
+                .addHeader("x-client-info", "{\"timezone\":\"Asia/Calcutta\"}")
+                .addHeader("x-request-lang", "en")
+                .addHeader("User-Agent", USER_AGENT)
+                .addHeader("Accept", "application/json, text/plain, */*")
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+            val body = response.body?.string() ?: return@withContext Pair(emptyList(), false)
+            if (!response.isSuccessful) {
+                Log.e(TAG, "fetchFilterShortsList HTTP ${response.code}")
+                return@withContext Pair(emptyList(), false)
+            }
+
+            val root = JSONObject(body)
+            val dataObj = root.optJSONObject("data") ?: return@withContext Pair(emptyList(), false)
+            val subjectListObj = dataObj.optJSONObject("subjectList") ?: return@withContext Pair(emptyList(), false)
+            val itemsArr = subjectListObj.optJSONArray("items") ?: JSONArray()
+            val pagerObj = subjectListObj.optJSONObject("pager")
+            val hasMore = pagerObj?.optBoolean("hasMore", false) ?: false
+
+            val items = mutableListOf<MovieItem>()
+            for (i in 0 until itemsArr.length()) {
+                val itObj = itemsArr.optJSONObject(i) ?: continue
+                items.add(parseFilterSubjectItem(itObj))
+            }
+            Pair(items, hasMore)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in fetchFilterShortsList: ${e.message}", e)
+            Pair(emptyList(), false)
+        }
+    }
+
+    private fun parseFilterSubjectItem(itObj: JSONObject): MovieItem {
+        val subjectId = itObj.optString("subjectId", "")
+        val title = itObj.optString("title", "Short Drama")
+        val description = itObj.optString("description", "")
+        val coverObj = itObj.optJSONObject("cover")
+        val coverUrl = coverObj?.optString("url", "") ?: ""
+        val coverWidth = coverObj?.optInt("width", 540) ?: 540
+        val coverHeight = coverObj?.optInt("height", 720) ?: 720
+        val genre = itObj.optString("genre", "Modern Drama")
+        val corner = itObj.optString("corner", "English")
+        val detailPath = itObj.optString("detailPath", "")
+        val rating = itObj.optString("imdbRatingValue", "")
+        val countryName = itObj.optString("countryName", "Short Drama")
+        val releaseDate = itObj.optString("releaseDate", "")
+
+        return MovieItem(
+            id = subjectId,
+            title = title,
+            description = description,
+            coverUrl = coverUrl,
+            backdropUrl = coverUrl,
+            rating = rating,
+            ratingCount = 0,
+            releaseDate = releaseDate,
+            genre = genre,
+            country = countryName,
+            corner = corner.ifBlank { "Shorts" },
+            duration = "",
+            isShort = true,
+            detailPath = detailPath,
+            source = "vskit",
+            uploadBy = "ShortsTV",
+            customHeaders = mapOf(
+                "origin" to "https://movieboxph.org",
+                "referer" to "https://movieboxph.org/quick-shorts"
+            ),
+            coverWidth = coverWidth,
+            coverHeight = coverHeight,
             isVskitServer = true
         )
     }

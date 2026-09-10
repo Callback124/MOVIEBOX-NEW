@@ -60,7 +60,10 @@ import com.example.data.api.VskitShortsApiClient
 import com.example.data.model.VskitEpisodeItem
 import com.example.data.download.MovieDownloadManager
 import android.widget.Toast
+import android.util.Log
+import androidx.compose.runtime.mutableStateListOf
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -193,6 +196,90 @@ private fun buildShortMediaSource(streamUrl: String, format: String): MediaSourc
     }
 }
 
+private val LANGUAGE_MAP = mapOf(
+    "en" to "English",
+    "eng" to "English",
+    "hi" to "Hindi",
+    "hin" to "Hindi",
+    "es" to "Spanish",
+    "spa" to "Spanish",
+    "fr" to "French",
+    "fra" to "French",
+    "fre" to "French",
+    "de" to "German",
+    "deu" to "German",
+    "ger" to "German",
+    "it" to "Italian",
+    "ita" to "Italian",
+    "pt" to "Portuguese",
+    "por" to "Portuguese",
+    "ru" to "Russian",
+    "rus" to "Russian",
+    "ja" to "Japanese",
+    "jpn" to "Japanese",
+    "ko" to "Korean",
+    "kor" to "Korean",
+    "zh" to "Chinese",
+    "chi" to "Chinese",
+    "zho" to "Chinese",
+    "cmn" to "Mandarin",
+    "yue" to "Cantonese",
+    "ta" to "Tamil",
+    "tam" to "Tamil",
+    "te" to "Telugu",
+    "tel" to "Telugu",
+    "th" to "Thai",
+    "tha" to "Thai",
+    "vi" to "Vietnamese",
+    "vie" to "Vietnamese",
+    "id" to "Indonesian",
+    "ind" to "Indonesian",
+    "tr" to "Turkish",
+    "tur" to "Turkish",
+    "ar" to "Arabic",
+    "ara" to "Arabic",
+    "fil" to "Filipino",
+    "tl" to "Tagalog"
+)
+
+private fun resolveDubLabel(lanName: String, lanCode: String, isOriginal: Boolean): String {
+    val cleanName = lanName.trim()
+    val cleanCode = lanCode.trim().lowercase()
+    val mapped = LANGUAGE_MAP[cleanCode] ?: LANGUAGE_MAP[cleanName.lowercase()]
+    val base = when {
+        cleanName.isNotBlank() && cleanName.length > 2 -> cleanName
+        mapped != null -> mapped
+        cleanCode.isNotBlank() -> cleanCode.uppercase()
+        else -> "Original"
+    }
+    return if (isOriginal) {
+        if (base.contains("Original", ignoreCase = true)) base else "$base (Original)"
+    } else {
+        if (base.contains("Dub", ignoreCase = true)) base else "$base Dub"
+    }
+}
+
+private fun formatResolutionDisplay(cleanRes: String): String {
+    val num = cleanRes.filter { it.isDigit() }
+    return when (num) {
+        "2160" -> "3840 × 2160"
+        "1440" -> "2560 × 1440"
+        "1080" -> "1920 × 1080"
+        "720" -> "1280 × 720"
+        "480" -> "854 × 480"
+        "360" -> "640 × 360"
+        else -> if (num.isNotBlank()) "${num}p" else cleanRes
+    }
+}
+
+private fun extractResolutionHeight(resText: String): String {
+    val clean = resText.trim()
+    if (clean.contains("×")) {
+        return clean.split("×").lastOrNull()?.trim()?.filter { it.isDigit() } ?: ""
+    }
+    return clean.filter { it.isDigit() }
+}
+
 data class ReelEpisodeItem(
     val id: String,
     val movie: MovieItem,
@@ -240,10 +327,15 @@ fun ShortsReelPlayer(
     var vskitEpisodes by remember(movie.id) {
         mutableStateOf<List<VskitEpisodeItem>>(emptyList())
     }
+    var currentDubs by remember(movie.id, detailedInfo) {
+        mutableStateOf(detailedInfo?.dubs?.ifEmpty { null } ?: movie.dubs)
+    }
 
     LaunchedEffect(movie.id, movie.detailPath, movie.isVskitServer) {
+        val isVskit = movie.isVskitServer || movie.source.equals("vskit", ignoreCase = true) ||
+            movie.uploadBy.equals("ShortsTV", ignoreCase = true) || movie.customHeaders.containsKey("X-Site-Domain")
         val subjectId = movie.id.ifBlank { movie.detailPath }
-        if (movie.isVskitServer || movie.source.equals("vskit", ignoreCase = true) || subjectId.length > 15) {
+        if (isVskit) {
             val eps = VskitShortsApiClient.fetchShortsEpisodes(subjectId)
             if (eps.isNotEmpty()) {
                 vskitEpisodes = eps
@@ -256,6 +348,9 @@ fun ShortsReelPlayer(
             )
             if (res != null) {
                 detailedInfo = res
+                if (res.dubs.isNotEmpty()) {
+                    currentDubs = res.dubs
+                }
             }
         }
     }
@@ -268,13 +363,16 @@ fun ShortsReelPlayer(
             episodes
         } else {
             val fromDetail = detailedInfo?.seasons?.find { it.seasonNumber == selectedSeason }?.maxEp
+                ?: detailedInfo?.seasons?.maxOfOrNull { it.maxEp }
                 ?: detailedInfo?.seasons?.firstOrNull()?.maxEp
             if (fromDetail != null && fromDetail > 1) {
                 (1..fromDetail).map { String.format("%02d", it) }
             } else if (movie.totalEpisodes > 1) {
                 (1..movie.totalEpisodes).map { String.format("%02d", it) }
             } else {
-                val cornerEp = movie.corner.filter { it.isDigit() }.toIntOrNull()
+                val cornerEp = Regex("""(\d+)\s*(?:EP|ep|Episodes|Ep)""").find(movie.corner)?.groupValues?.get(1)?.toIntOrNull()
+                    ?: Regex("""(\d+)""").find(movie.corner)?.groupValues?.get(1)?.toIntOrNull()
+                    ?: Regex("""(\d+)""").find(detailedInfo?.corner ?: "")?.groupValues?.get(1)?.toIntOrNull()
                 val epCount = if (cornerEp != null && cornerEp in 2..500) cornerEp else 60
                 (1..epCount).map { String.format("%02d", it) }
             }
@@ -383,10 +481,46 @@ fun ShortsReelPlayer(
 
     // Settings Modal State (Quality & Audio selection)
     var showSettingsDialog by remember { mutableStateOf(false) }
-    var selectedQuality by remember { mutableStateOf("Auto") }
-    var availableVideoQualities by remember { mutableStateOf(listOf("Auto", "1080p", "720p", "480p")) }
+    var selectedQuality by remember { mutableStateOf("1920 × 1080") }
+    var availableVideoQualities by remember { mutableStateOf(listOf("1920 × 1080", "1280 × 720", "854 × 480")) }
     var currentEpisodeStreams by remember { mutableStateOf<List<MovieStream>>(emptyList()) }
-    var availableAudioTracks by remember { mutableStateOf<List<PlayerAudioTrack>>(emptyList()) }
+    val internalAudioTracks = remember { mutableStateListOf<PlayerAudioTrack>() }
+
+    val availableAudioTracks = remember(currentDubs, internalAudioTracks) {
+        val list = mutableListOf<PlayerAudioTrack>()
+        if (currentDubs.isNotEmpty()) {
+            for (dub in currentDubs) {
+                val label = resolveDubLabel(dub.lanName, dub.lanCode, dub.original)
+                val safeSubjId = dub.subjectId.ifBlank { dub.lanCode.ifBlank { dub.lanName } }
+                val effectiveSubjId = dub.subjectId.ifBlank {
+                    if (dub.original) movie.id else ""
+                }
+                list.add(
+                    PlayerAudioTrack(
+                        id = "dub_${safeSubjId}_${dub.lanCode}",
+                        label = label,
+                        isDub = true,
+                        dubSubjectId = effectiveSubjId,
+                        dubDetailPath = dub.detailPath
+                    )
+                )
+            }
+        }
+        for (internal in internalAudioTracks) {
+            if (internal.id != "auto" && internal.id != "default") {
+                list.add(internal)
+            }
+        }
+        if (list.isEmpty()) {
+            val defaultLabel = if (movie.corner.isNotBlank() && (movie.corner.contains("Dub", ignoreCase = true) || movie.corner.contains("Eng", ignoreCase = true) || movie.corner.contains("Hin", ignoreCase = true))) {
+                "${movie.corner} (Original)"
+            } else {
+                "Original Audio"
+            }
+            list.add(PlayerAudioTrack(id = "auto", label = defaultLabel))
+        }
+        list
+    }
     var currentAudioTrackId by remember { mutableStateOf("auto") }
 
     // Auto-hide controls state for Shorts Player
@@ -430,15 +564,20 @@ fun ShortsReelPlayer(
     // Function to extract audio tracks from exoPlayer
     fun updateAudioTracks() {
         val tracks = mutableListOf<PlayerAudioTrack>()
-        tracks.add(PlayerAudioTrack("auto", "Default Audio"))
         val currentTracks = exoPlayer.currentTracks
         for (i in 0 until currentTracks.groups.size) {
             val group = currentTracks.groups[i]
             if (group.type == C.TRACK_TYPE_AUDIO) {
                 for (j in 0 until group.length) {
                     val format = group.getTrackFormat(j)
-                    val lang = format.language?.uppercase() ?: "Track ${j + 1}"
-                    val label = format.label ?: lang
+                    val lang = format.language?.lowercase() ?: ""
+                    val mapped = LANGUAGE_MAP[lang]
+                    val label = when {
+                        !format.label.isNullOrBlank() -> format.label!!
+                        mapped != null -> "$mapped (Audio)"
+                        lang.isNotBlank() -> "${lang.uppercase()} (Audio)"
+                        else -> "Track ${j + 1}"
+                    }
                     tracks.add(
                         PlayerAudioTrack(
                             id = "${i}_${j}",
@@ -450,7 +589,8 @@ fun ShortsReelPlayer(
                 }
             }
         }
-        availableAudioTracks = tracks
+        internalAudioTracks.clear()
+        internalAudioTracks.addAll(tracks)
     }
 
     // Notify active short / episode change to caller
@@ -587,46 +727,53 @@ fun ShortsReelPlayer(
         exoPlayer.stop()
         exoPlayer.clearMediaItems()
 
-        val cacheKey = "${currentItem.movie.id}_${currentItem.season}_${currentItem.episode}"
+        val activeDub = availableAudioTracks.find { it.id == currentAudioTrackId && it.isDub }
+        val targetSubjectId = activeDub?.dubSubjectId?.takeIf { it.isNotBlank() } ?: currentItem.movie.id
+        val targetDetailPath = activeDub?.dubDetailPath ?: currentItem.movie.detailPath
+
+        val cacheKey = "${targetSubjectId}_${currentItem.season}_${currentItem.episode}"
         val cached = streamCache[cacheKey]
 
         val streamUrl: String
         val format: String
 
+        val isVskit = currentItem.movie.isVskitServer || currentItem.movie.source.equals("vskit", ignoreCase = true) ||
+            currentItem.movie.uploadBy.equals("ShortsTV", ignoreCase = true) || currentItem.movie.customHeaders.containsKey("X-Site-Domain")
+
         if (cached != null && cached.first.isNotBlank()) {
             streamUrl = cached.first
             format = cached.second
             isFetchingStream = false
-        } else if (currentItem.directStreamUrl.isNotBlank()) {
+        } else if (currentItem.directStreamUrl.isNotBlank() && activeDub == null) {
             streamUrl = currentItem.directStreamUrl
             format = "MP4"
             currentEpisodeStreams = emptyList()
-            availableVideoQualities = listOf("Auto", "720p", "480p")
+            availableVideoQualities = listOf("1920 × 1080", "1280 × 720", "854 × 480")
             streamCache[cacheKey] = Pair(streamUrl, format)
             isFetchingStream = false
-        } else if (currentItem.movie.isVskitServer || currentItem.movie.source.equals("vskit", ignoreCase = true)) {
-            val eps = VskitShortsApiClient.fetchShortsEpisodes(currentItem.movie.id)
+        } else if (isVskit && activeDub == null) {
+            val eps = if (vskitEpisodes.isNotEmpty()) vskitEpisodes else VskitShortsApiClient.fetchShortsEpisodes(currentItem.movie.id)
             val match = eps.find { it.ep == currentItem.episode } ?: eps.firstOrNull()
             streamUrl = match?.videoUrl ?: FALLBACK_SHORT_STREAM
             format = "MP4"
             currentEpisodeStreams = emptyList()
-            availableVideoQualities = listOf("Auto", "720p", "480p")
+            availableVideoQualities = listOf("1920 × 1080", "1280 × 720", "854 × 480")
             if (streamUrl != FALLBACK_SHORT_STREAM) {
                 streamCache[cacheKey] = Pair(streamUrl, format)
             }
             isFetchingStream = false
-        } else if (currentItem.movie.directUrl.isNotBlank()) {
+        } else if (currentItem.movie.directUrl.isNotBlank() && activeDub == null) {
             streamUrl = currentItem.movie.directUrl
             format = "MP4"
             currentEpisodeStreams = emptyList()
-            availableVideoQualities = listOf("Auto", "1080p", "720p", "480p")
+            availableVideoQualities = listOf("1920 × 1080", "1280 × 720", "854 × 480")
             streamCache[cacheKey] = Pair(streamUrl, format)
             isFetchingStream = false
         } else {
             val streamResult = MovieBoxApiClient.fetchPlayStreams(
                 context = context,
-                subjectId = currentItem.movie.id,
-                detailPath = currentItem.movie.detailPath,
+                subjectId = targetSubjectId,
+                detailPath = targetDetailPath,
                 isShort = true,
                 season = currentItem.season,
                 episode = currentItem.episode
@@ -635,23 +782,17 @@ fun ShortsReelPlayer(
 
             val streamQualities = streamResult.streams.map { s ->
                 val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() }?.ifBlank { "720" } ?: "720"
-                when (clean) {
-                    "1080" -> "1920 × 1080"
-                    "720" -> "1280 × 720"
-                    "480" -> "854 × 480"
-                    "360" -> "640 × 360"
-                    else -> "${clean}p"
-                }
-            }.distinct()
+                formatResolutionDisplay(clean)
+            }.filter { it.contains("×") }.distinct()
 
             availableVideoQualities = if (streamQualities.isNotEmpty()) {
-                listOf("Auto") + streamQualities.filter { !it.equals("Auto", ignoreCase = true) }
+                streamQualities
             } else {
-                listOf("Auto", "1920 × 1080", "1280 × 720", "854 × 480")
+                listOf("1920 × 1080", "1280 × 720", "854 × 480")
             }
 
-            val digits = selectedQuality.filter { it.isDigit() }
-            val chosenStream = if (digits.isNotBlank() && !selectedQuality.equals("Auto", ignoreCase = true)) {
+            val digits = extractResolutionHeight(selectedQuality)
+            val chosenStream = if (digits.isNotBlank()) {
                 streamResult.streams.firstOrNull { s ->
                     val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() } ?: ""
                     clean.contains(digits) || digits.contains(clean)
@@ -787,37 +928,7 @@ fun ShortsReelPlayer(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Episode / Shorts Badge (Back icon removed per user request: "shortsplayer me back icon hata do")
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MovieBoxRed
-                        ) {
-                            Text(
-                                text = if (safeList.size > 1 && episodes.size > 1) "EP ${shortItem.episodeFormatted}" else "SHORTS",
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.5.dp)
-                            )
-                        }
-
                         Spacer(modifier = Modifier.weight(1f))
-
-                        // Counter Indicator (e.g. 5 / 24)
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color.Black.copy(alpha = 0.45f)
-                        ) {
-                            Text(
-                                text = "${page + 1} / ${safeList.size}",
-                                color = Color.White.copy(alpha = 0.9f),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
 
                         // SETTINGS BUTTON (Gear Icon in Top Bar - Quality & Audio modal)
                         IconButton(
@@ -1008,17 +1119,23 @@ fun ShortsReelPlayer(
 
                             Spacer(modifier = Modifier.height(6.dp))
 
-                            // Subtitle: Episode X • Description (Matches screenshot layout)
+                            // Subtitle: EP X/Total • Description (Matches original layout with full details)
                             val epNumber = shortItem.episodeFormatted.toIntOrNull() ?: shortItem.episodeFormatted
+                            val totalEpCount = safeList.size
                             val detailSynopsis = (detailedInfo?.description?.ifBlank { null }
                                 ?: shortItem.description.ifBlank { null }
                                 ?: shortItem.movie.description.ifBlank { null }
                                 ?: shortItem.subtitle).trim()
 
-                            val subtitleText = if (detailSynopsis.isNotBlank()) {
-                                "Episode $epNumber • $detailSynopsis"
-                            } else {
-                                "Episode $epNumber"
+                            val subtitleText = buildString {
+                                append("EP $epNumber")
+                                if (totalEpCount > 1) {
+                                    append("/$totalEpCount")
+                                }
+                                if (detailSynopsis.isNotBlank()) {
+                                    append(" • ")
+                                    append(detailSynopsis)
+                                }
                             }
 
                             Text(
@@ -1084,15 +1201,14 @@ fun ShortsReelPlayer(
                 currentVideoQuality = selectedQuality,
                 onVideoQualitySelected = { newQuality ->
                     selectedQuality = newQuality
-                    val digits = newQuality.filter { it.isDigit() }
-                    val matchedStream = if (digits.isNotBlank() && !newQuality.equals("Auto", ignoreCase = true)) {
+                    val digits = extractResolutionHeight(newQuality)
+                    val matchedStream = if (digits.isNotBlank()) {
                         currentEpisodeStreams.firstOrNull { s ->
                             val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() } ?: ""
                             clean.contains(digits) || digits.contains(clean)
                         }
                     } else null
-                    val targetStream = matchedStream
-                        ?: currentEpisodeStreams.firstOrNull()
+                    val targetStream = matchedStream ?: currentEpisodeStreams.firstOrNull()
                     if (targetStream != null && targetStream.url.isNotBlank()) {
                         val currentPos = exoPlayer.currentPosition
                         val mediaSource = buildShortMediaSource(targetStream.url, targetStream.format)
@@ -1100,13 +1216,77 @@ fun ShortsReelPlayer(
                         exoPlayer.prepare()
                         if (currentPos > 0) exoPlayer.seekTo(currentPos)
                         exoPlayer.play()
+                    } else {
+                        val (targetW, targetH) = when (digits) {
+                            "2160" -> 3840 to 2160
+                            "1440" -> 2560 to 1440
+                            "1080" -> 1920 to 1080
+                            "720" -> 1280 to 720
+                            "480" -> 854 to 480
+                            "360" -> 640 to 360
+                            else -> 1280 to 720
+                        }
+                        try {
+                            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                                .buildUpon()
+                                .setMaxVideoSize(targetW, targetH)
+                                .build()
+                        } catch (_: Exception) {}
                     }
                 },
                 availableAudioTracks = availableAudioTracks,
                 currentAudioTrackId = currentAudioTrackId,
                 onAudioTrackSelected = { selectedAudio ->
                     currentAudioTrackId = selectedAudio.id
-                    if (selectedAudio.groupIndex >= 0) {
+                    if (selectedAudio.isDub) {
+                        val effectiveSubjId = selectedAudio.dubSubjectId.ifBlank {
+                            if (selectedAudio.label.contains("Original", ignoreCase = true)) movie.id else ""
+                        }
+                        if (effectiveSubjId.isNotBlank() || selectedAudio.dubDetailPath.isNotBlank()) {
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    val currentItem = safeList.getOrNull(pagerState.currentPage)
+                                    val currentSeason = currentItem?.season ?: 1
+                                    val currentEp = currentItem?.episode ?: 1
+                                    val currentPos = exoPlayer.currentPosition
+
+                                    val dubResult = MovieBoxApiClient.fetchPlayStreams(
+                                        context = context,
+                                        subjectId = effectiveSubjId,
+                                        detailPath = selectedAudio.dubDetailPath,
+                                        isShort = true,
+                                        season = currentSeason,
+                                        episode = currentEp
+                                    )
+                                    val validStreams = dubResult.streams.filter { it.url.isNotBlank() }
+                                    val digits = extractResolutionHeight(selectedQuality)
+                                    val matched = validStreams.firstOrNull { s ->
+                                        val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() } ?: ""
+                                        digits.isNotBlank() && (clean.contains(digits) || digits.contains(clean))
+                                    } ?: dubResult.defaultStream?.takeIf { it.url.isNotBlank() } ?: validStreams.firstOrNull()
+
+                                    if (matched != null && matched.url.isNotBlank()) {
+                                        currentEpisodeStreams = validStreams
+                                        val cacheKey = "${effectiveSubjId}_${currentSeason}_${currentEp}"
+                                        streamCache[cacheKey] = Pair(matched.url, matched.format)
+                                        withContext(Dispatchers.Main) {
+                                            val mediaSource = buildShortMediaSource(matched.url, matched.format)
+                                            exoPlayer.setMediaSource(mediaSource)
+                                            exoPlayer.prepare()
+                                            if (currentPos > 0) exoPlayer.seekTo(currentPos)
+                                            exoPlayer.play()
+                                        }
+                                    } else {
+                                        withContext(Dispatchers.Main) {
+                                            Toast.makeText(context, "Dub stream not available for this episode", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("ShortsReelPlayer", "Error loading dub stream", e)
+                                }
+                            }
+                        }
+                    } else if (selectedAudio.groupIndex >= 0) {
                         try {
                             val trackGroup = exoPlayer.currentTracks.groups[selectedAudio.groupIndex]
                             exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters

@@ -67,6 +67,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.decode.SvgDecoder
+import coil.request.ImageRequest
 import com.example.R
 import com.example.data.download.DownloadStatus
 import com.example.data.download.MovieDownloadManager
@@ -130,7 +132,7 @@ fun HomeScreen(
                         viewModel.openSectionPage(section, isShortsSection = isHotShortTv, isLandscape = isLandscape)
                     },
                     onToggleServer = { viewModel.toggleServer() },
-                    onLoadMoreRecommend = { viewModel.loadMoreShortsTvRecommend() }
+                    onLoadMoreRecommend = { viewModel.loadMoreVskitFilterShorts() }
                 )
             }
 
@@ -244,16 +246,16 @@ private fun HomeMainFeedView(
         downloads.count { it.status == DownloadStatus.DOWNLOADING }
     }
 
-    // Infinite scroll auto-load for Shorts TV
-    LaunchedEffect(scrollState, uiState.activeServer, uiState.shortsTvRecommendHasMore, uiState.isShortsTvRecommendLoadingMore) {
+    // Infinite scroll auto-load for VSKit filter shorts
+    LaunchedEffect(scrollState, uiState.activeServer, uiState.vskitFilterHasMore, uiState.isVskitFilterLoadingMore) {
         if (uiState.activeServer == AppServer.SERVER_2) {
             snapshotFlow {
                 val layoutInfo = scrollState.layoutInfo
                 val totalItems = layoutInfo.totalItemsCount
                 val lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-                totalItems > 0 && lastVisibleIndex >= totalItems - 4
+                totalItems > 0 && lastVisibleIndex >= totalItems - 6
             }.collect { shouldLoadMore ->
-                if (shouldLoadMore && uiState.shortsTvRecommendHasMore && !uiState.isShortsTvRecommendLoadingMore) {
+                if (shouldLoadMore && uiState.vskitFilterHasMore && !uiState.isVskitFilterLoadingMore) {
                     onLoadMoreRecommend()
                 }
             }
@@ -290,17 +292,23 @@ private fun HomeMainFeedView(
                     if (uiState.activeServer == AppServer.SERVER_2) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = MovieBoxRed,
+                            color = Color(0xFF1B1D24),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
                             modifier = Modifier.size(34.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.LocalFireDepartment,
-                                    contentDescription = "Shorts TV",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
+                            AsyncImage(
+                                model = ImageRequest.Builder(LocalContext.current)
+                                    .data("https://vskit.online/logo.svg")
+                                    .decoderFactory(SvgDecoder.Factory())
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = "VSKit Logo",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .padding(4.dp)
+                            )
                         }
                     } else {
                         // MovieBox App Logo
@@ -316,7 +324,7 @@ private fun HomeMainFeedView(
                     Spacer(modifier = Modifier.width(10.dp))
 
                     Text(
-                        text = if (uiState.activeServer == AppServer.SERVER_2) "Shorts TV" else "MovieBox",
+                        text = if (uiState.activeServer == AppServer.SERVER_2) "VSKit" else "MovieBox",
                         color = Color.White,
                         fontSize = 21.sp,
                         fontWeight = FontWeight.ExtraBold,
@@ -396,7 +404,7 @@ private fun HomeMainFeedView(
                             )
                             Spacer(modifier = Modifier.height(14.dp))
                             Text(
-                                text = "Loading Shorts TV...",
+                                text = "Loading VSKit...",
                                 color = Color(0xFFA1A1AA),
                                 fontSize = 14.sp
                             )
@@ -407,7 +415,7 @@ private fun HomeMainFeedView(
                         state = scrollState,
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        // 1. Hero banner carousel for Shorts TV featured drama
+                        // 1. Hero banner carousel for VSKit featured drama
                         if (uiState.shortsTvFeedData.heroBanners.isNotEmpty()) {
                             item(key = "shorts_hero_carousel") {
                                 HeroBannerCarousel(
@@ -418,7 +426,7 @@ private fun HomeMainFeedView(
                             }
                         }
 
-                        // 2. Curated sections from Server 2 (Top Searches, Trending, New Releases)
+                        // 2. Curated sections from VSKit (Top Searches, Trending, New Releases)
                         itemsIndexed(
                             uiState.shortsTvFeedData.sections,
                             key = { index, section -> "shorts_sec_${section.id}_$index" }
@@ -427,7 +435,7 @@ private fun HomeMainFeedView(
                                 section = section,
                                 isLandscape = false,
                                 onMovieClick = { movie ->
-                                    // ALL data from Server 2 strictly plays in ShortsReelPlayer!
+                                    // ALL data from VSKit strictly plays in ShortsReelPlayer!
                                     onMovieClick(movie, section.items, true)
                                 },
                                 onViewMoreClick = { clickedSection ->
@@ -436,13 +444,34 @@ private fun HomeMainFeedView(
                             )
                         }
 
-                        // 3. "Find Your Gem" / Recommended Shorts TV grid
-                        if (uiState.shortsTvRecommendList.isNotEmpty()) {
-                            item(key = "gem_header") {
+                        // 3. Custom row added at the last of VSKit (from filter API channelId=1012)
+                        if (uiState.vskitFilterShortsList.isNotEmpty()) {
+                            val customSection = CategorySection(
+                                id = "vskit_custom_row_filter_1012",
+                                title = "⚡ Quick Shorts",
+                                type = "VSKIT_SHORTS",
+                                items = uiState.vskitFilterShortsList.take(24),
+                                isVskitSection = true
+                            )
+                            item(key = "vskit_custom_filter_row") {
+                                MovieRow(
+                                    section = customSection,
+                                    isLandscape = false,
+                                    onMovieClick = { movie ->
+                                        onMovieClick(movie, uiState.vskitFilterShortsList, true)
+                                    },
+                                    onViewMoreClick = { clickedSection ->
+                                        onViewMoreClick(clickedSection, true, false)
+                                    }
+                                )
+                            }
+
+                            // 4. Infinite Auto-Loaded Feed of Quick Shorts
+                            item(key = "vskit_filter_feed_header") {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 10.dp),
+                                        .padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Box(
@@ -454,15 +483,64 @@ private fun HomeMainFeedView(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "💎 Find Your Gem",
+                                        text = "🎬 All Quick Shorts",
                                         color = Color.White,
                                         fontSize = 17.sp,
                                         fontWeight = FontWeight.Bold
                                     )
+                                    Spacer(modifier = Modifier.weight(1f))
+                                    Text(
+                                        text = "${uiState.vskitFilterShortsList.size} loaded",
+                                        color = Color(0xFFA1A1AA),
+                                        fontSize = 12.sp
+                                    )
                                 }
                             }
 
-                            // 3-column chunk grid
+                            // 3-column chunk grid of all loaded Quick Shorts
+                            val chunks = uiState.vskitFilterShortsList.chunked(3)
+                            itemsIndexed(chunks, key = { index, _ -> "vskit_filter_chunk_$index" }) { _, rowItems ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    rowItems.forEach { movie ->
+                                        ShortsGemCard(
+                                            movie = movie,
+                                            onClick = {
+                                                onMovieClick(movie, uiState.vskitFilterShortsList, true)
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    if (rowItems.size < 3) {
+                                        repeat(3 - rowItems.size) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Infinite scroll loading indicator at bottom of list (only shown while loading and more exist)
+                            if (uiState.isVskitFilterLoadingMore && uiState.vskitFilterHasMore) {
+                                item(key = "auto_loading_vskit_filter") {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 16.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        CircularProgressIndicator(
+                                            color = MovieBoxRed,
+                                            strokeWidth = 2.5.dp,
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (uiState.shortsTvRecommendList.isNotEmpty()) {
                             val chunks = uiState.shortsTvRecommendList.chunked(3)
                             itemsIndexed(chunks, key = { index, _ -> "gem_chunk_$index" }) { _, rowItems ->
                                 Row(
@@ -484,24 +562,6 @@ private fun HomeMainFeedView(
                                         repeat(3 - rowItems.size) {
                                             Spacer(modifier = Modifier.weight(1f))
                                         }
-                                    }
-                                }
-                            }
-
-                            // Infinite scroll loading indicator at bottom of list
-                            if (uiState.isShortsTvRecommendLoadingMore) {
-                                item(key = "auto_loading_gems") {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 16.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        CircularProgressIndicator(
-                                            color = MovieBoxRed,
-                                            strokeWidth = 2.5.dp,
-                                            modifier = Modifier.size(28.dp)
-                                        )
                                     }
                                 }
                             }
@@ -633,39 +693,16 @@ fun ServerSwitchFloatingButton(
         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
         modifier = modifier.testTag("server_switch_red_button")
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+        Box(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = Icons.Default.Dns,
-                contentDescription = "Server Switch",
-                tint = Color.White,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(modifier = Modifier.width(6.dp))
-            Column {
-                Text(
-                    text = activeServer.title,
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    lineHeight = 13.sp
-                )
-                Text(
-                    text = activeServer.badge,
-                    color = Color.White.copy(alpha = 0.85f),
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Medium,
-                    lineHeight = 10.sp
-                )
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            Icon(
-                imageVector = Icons.Default.SwapHoriz,
-                contentDescription = "Toggle Server",
-                tint = Color.White.copy(alpha = 0.9f),
-                modifier = Modifier.size(16.dp)
+            Text(
+                text = activeServer.title,
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 0.2.sp
             )
         }
     }

@@ -13,6 +13,7 @@ import com.example.data.repository.MovieBoxRepository
 import com.example.data.model.toMovieItem
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -75,7 +76,11 @@ data class HomeUiState(
     val isShortsTvLoading: Boolean = false,
     val isShortsTvRecommendLoadingMore: Boolean = false,
     val shortsTvRecommendHasMore: Boolean = true,
-    val shortsTvRecommendPage: Int = 1
+    val shortsTvRecommendPage: Int = 1,
+    val vskitFilterShortsList: List<MovieItem> = emptyList(),
+    val vskitFilterPage: Int = 1,
+    val vskitFilterHasMore: Boolean = true,
+    val isVskitFilterLoadingMore: Boolean = false
 ) {
     val currentScreen: AppScreen get() = screenStack.lastOrNull() ?: AppScreen.Home
 }
@@ -89,6 +94,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private var suggestJob: Job? = null
     private var searchJob: Job? = null
+    private var vskitAutoLoadJob: Job? = null
 
     init {
         loadData()
@@ -129,21 +135,102 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun loadShortsTvData() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isShortsTvLoading = it.shortsTvFeedData.sections.isEmpty()) }
+            _uiState.update { it.copy(isShortsTvLoading = it.shortsTvFeedData.sections.isEmpty() && it.vskitFilterShortsList.isEmpty()) }
             try {
                 val feed = repository.refreshShortsTvFeed()
-                val (recList, hasMore) = repository.fetchShortsRecommendList(page = 1)
+                val (filterList, filterHasMore) = repository.fetchFilterShortsList(page = 1, perPage = 24, channelId = 1012)
                 _uiState.update {
                     it.copy(
                         shortsTvFeedData = feed,
-                        shortsTvRecommendList = recList,
-                        shortsTvRecommendHasMore = hasMore,
-                        shortsTvRecommendPage = 1,
+                        vskitFilterShortsList = filterList,
+                        vskitFilterHasMore = filterHasMore,
+                        vskitFilterPage = 1,
                         isShortsTvLoading = false
                     )
                 }
+                // Automatic background load without requiring scroll
+                startVskitAutoLoad()
             } catch (_: Exception) {
                 _uiState.update { it.copy(isShortsTvLoading = false) }
+            }
+        }
+    }
+
+    /**
+     * Automatically loads all available pages sequentially in background
+     * without requiring user to scroll, keeping UI smooth.
+     */
+    fun startVskitAutoLoad() {
+        vskitAutoLoadJob?.cancel()
+        vskitAutoLoadJob = viewModelScope.launch {
+            var currentPage = 2
+            var hasMore = true
+            // Pre-load up to 20 pages automatically in background
+            while (hasMore && currentPage <= 20 && isActive) {
+                try {
+                    delay(350)
+                    val (moreList, more) = repository.fetchFilterShortsList(
+                        page = currentPage,
+                        perPage = 24,
+                        channelId = 1012
+                    )
+                    hasMore = more && moreList.isNotEmpty()
+                    if (moreList.isNotEmpty()) {
+                        _uiState.update { state ->
+                            val combined = (state.vskitFilterShortsList + moreList).distinctBy { m -> m.id }
+                            state.copy(
+                                vskitFilterShortsList = combined,
+                                vskitFilterPage = currentPage,
+                                vskitFilterHasMore = hasMore,
+                                isVskitFilterLoadingMore = false
+                            )
+                        }
+                    } else {
+                        hasMore = false
+                        break
+                    }
+                    currentPage++
+                } catch (_: Exception) {
+                    hasMore = false
+                    break
+                }
+            }
+            // When auto-loading completes, mark hasMore to false and clear loading state so bottom indicator never lingers
+            _uiState.update { state ->
+                state.copy(
+                    vskitFilterHasMore = false,
+                    isVskitFilterLoadingMore = false
+                )
+            }
+        }
+    }
+
+    /**
+     * Infinite loader for VSKit filter API when user reaches bottom
+     */
+    fun loadMoreVskitFilterShorts() {
+        val current = _uiState.value
+        if (current.isVskitFilterLoadingMore || !current.vskitFilterHasMore || vskitAutoLoadJob?.isActive == true) return
+        val nextPage = current.vskitFilterPage + 1
+        viewModelScope.launch {
+            _uiState.update { it.copy(isVskitFilterLoadingMore = true) }
+            try {
+                val (moreList, hasMore) = repository.fetchFilterShortsList(
+                    page = nextPage,
+                    perPage = 24,
+                    channelId = 1012
+                )
+                val effectiveHasMore = hasMore && moreList.isNotEmpty()
+                _uiState.update {
+                    it.copy(
+                        vskitFilterShortsList = (it.vskitFilterShortsList + moreList).distinctBy { m -> m.id },
+                        vskitFilterHasMore = effectiveHasMore,
+                        vskitFilterPage = nextPage,
+                        isVskitFilterLoadingMore = false
+                    )
+                }
+            } catch (_: Exception) {
+                _uiState.update { it.copy(isVskitFilterLoadingMore = false, vskitFilterHasMore = false) }
             }
         }
     }
@@ -176,16 +263,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             if (_uiState.value.activeServer == AppServer.SERVER_2) {
                 try {
                     val feed = repository.refreshShortsTvFeed()
-                    val (recList, hasMore) = repository.fetchShortsRecommendList(page = 1)
+                    val (filterList, filterHasMore) = repository.fetchFilterShortsList(page = 1, perPage = 24, channelId = 1012)
                     _uiState.update {
                         it.copy(
                             shortsTvFeedData = feed,
-                            shortsTvRecommendList = recList,
-                            shortsTvRecommendHasMore = hasMore,
-                            shortsTvRecommendPage = 1,
+                            vskitFilterShortsList = filterList,
+                            vskitFilterHasMore = filterHasMore,
+                            vskitFilterPage = 1,
                             isRefreshing = false
                         )
                     }
+                    startVskitAutoLoad()
                 } catch (_: Exception) {
                     _uiState.update { it.copy(isRefreshing = false) }
                 }

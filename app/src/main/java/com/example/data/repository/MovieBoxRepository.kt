@@ -56,6 +56,14 @@ class MovieBoxRepository(private val context: Context) {
         return VskitShortsApiClient.fetchShortsRecommendList(page, perPage)
     }
 
+    suspend fun fetchFilterShortsList(
+        page: Int = 1,
+        perPage: Int = 24,
+        channelId: Int = 1012
+    ): Pair<List<MovieItem>, Boolean> {
+        return VskitShortsApiClient.fetchFilterShortsList(page, perPage, channelId)
+    }
+
     suspend fun fetchShortsEpisodes(subjectId: String): List<VskitEpisodeItem> {
         return VskitShortsApiClient.fetchShortsEpisodes(subjectId)
     }
