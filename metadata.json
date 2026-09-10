@@ -1,0 +1,6 @@
+{
+  "name": "MovieBox",
+  "description": "Ultra-fast streaming app for Movies, TV Series, and Shorts with 0% lag and high performance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
