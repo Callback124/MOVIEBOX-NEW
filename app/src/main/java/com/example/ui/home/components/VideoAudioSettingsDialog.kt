@@ -315,9 +315,7 @@ fun VideoAudioSettingsDialog(
                     Spacer(Modifier.width(8.dp))
                     TextButton(
                         onClick = {
-                            if (tempSelectedQuality != currentVideoQuality) {
-                                onVideoQualitySelected(tempSelectedQuality)
-                            }
+                            onVideoQualitySelected(tempSelectedQuality)
                             if (tempSelectedAudioTrackId != currentAudioTrackId) {
                                 val selectedTrack = availableAudioTracks.firstOrNull { it.id == tempSelectedAudioTrackId }
                                     ?: PlayerAudioTrack(tempSelectedAudioTrackId, tempSelectedAudioTrackId)

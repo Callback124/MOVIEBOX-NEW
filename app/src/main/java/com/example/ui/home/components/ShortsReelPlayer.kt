@@ -280,6 +280,30 @@ private fun extractResolutionHeight(resText: String): String {
     return clean.filter { it.isDigit() }
 }
 
+private fun getSavedQualityPreference(context: Context): String {
+    return try {
+        val sp = context.getSharedPreferences("player_settings_pref", Context.MODE_PRIVATE)
+        sp.getString("saved_video_quality", "1920 × 1080") ?: "1920 × 1080"
+    } catch (_: Exception) {
+        "1920 × 1080"
+    }
+}
+
+private fun saveQualityPreference(context: Context, quality: String) {
+    try {
+        val sp = context.getSharedPreferences("player_settings_pref", Context.MODE_PRIVATE)
+        sp.edit().putString("saved_video_quality", quality).apply()
+    } catch (_: Exception) {}
+}
+
+data class CachedShortStream(
+    val streamUrl: String,
+    val format: String,
+    val streams: List<MovieStream>,
+    val qualities: List<String>,
+    val selectedQuality: String
+)
+
 data class ReelEpisodeItem(
     val id: String,
     val movie: MovieItem,
@@ -289,7 +313,9 @@ data class ReelEpisodeItem(
     val title: String,
     val subtitle: String,
     val description: String,
-    val directStreamUrl: String = ""
+    val directStreamUrl: String = "",
+    val directStreams: List<MovieStream> = emptyList(),
+    val defaultResolution: String = ""
 )
 
 /**
@@ -394,7 +420,9 @@ fun ShortsReelPlayer(
                 title = movie.title,
                 subtitle = "Episode $epNum",
                 description = movie.description,
-                directStreamUrl = vskitItem?.videoUrl ?: ""
+                directStreamUrl = vskitItem?.videoUrl ?: "",
+                directStreams = vskitItem?.streams ?: emptyList(),
+                defaultResolution = vskitItem?.resolution ?: ""
             )
         }
     }
@@ -459,7 +487,8 @@ fun ShortsReelPlayer(
     var isLocked by remember { mutableStateOf(false) }
     var showDownloadDialog by remember { mutableStateOf(false) }
     var showChooseEpisodeModal by remember { mutableStateOf(false) }
-    val streamCache = remember { mutableMapOf<String, Pair<String, String>>() }
+    val streamCache = remember { mutableMapOf<String, CachedShortStream>() }
+    var userManualQualityOverride by remember { mutableStateOf<String?>(null) }
     var resizeMode by remember { mutableStateOf(AspectRatioFrameLayout.RESIZE_MODE_ZOOM) }
     var currentPositionMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
@@ -481,8 +510,8 @@ fun ShortsReelPlayer(
 
     // Settings Modal State (Quality & Audio selection)
     var showSettingsDialog by remember { mutableStateOf(false) }
-    var selectedQuality by remember { mutableStateOf("1920 × 1080") }
-    var availableVideoQualities by remember { mutableStateOf(listOf("1920 × 1080", "1280 × 720", "854 × 480")) }
+    var selectedQuality by remember { mutableStateOf("") }
+    var availableVideoQualities by remember { mutableStateOf<List<String>>(emptyList()) }
     var currentEpisodeStreams by remember { mutableStateOf<List<MovieStream>>(emptyList()) }
     val internalAudioTracks = remember { mutableStateListOf<PlayerAudioTrack>() }
 
@@ -687,16 +716,22 @@ fun ShortsReelPlayer(
             if (!streamCache.containsKey(cacheKey)) {
                 launch(Dispatchers.IO) {
                     try {
-                        if (item.directStreamUrl.isNotBlank()) {
-                            streamCache[cacheKey] = Pair(item.directStreamUrl, "MP4")
-                        } else if (item.movie.isVskitServer || item.movie.source.equals("vskit", ignoreCase = true)) {
+                        val isVskitItem = item.movie.isVskitServer ||
+                            item.movie.source.equals("vskit", ignoreCase = true) ||
+                            item.movie.uploadBy.equals("ShortsTV", ignoreCase = true) ||
+                            item.directStreams.isNotEmpty()
+                        val streams = if (item.directStreams.isNotEmpty()) {
+                            item.directStreams.filter { it.url.isNotBlank() }
+                        } else if (isVskitItem) {
                             val eps = VskitShortsApiClient.fetchShortsEpisodes(item.movie.id)
                             val match = eps.find { it.ep == item.episode }
-                            if (match != null && match.videoUrl.isNotBlank()) {
-                                streamCache[cacheKey] = Pair(match.videoUrl, "MP4")
-                            }
-                        } else if (item.movie.directUrl.isNotBlank()) {
-                            streamCache[cacheKey] = Pair(item.movie.directUrl, "MP4")
+                            if (match != null && match.streams.isNotEmpty()) {
+                                match.streams.filter { it.url.isNotBlank() }
+                            } else if (match != null && match.videoUrl.isNotBlank()) {
+                                val cleanRes = match.resolution.split(",").firstOrNull()?.filter { it.isDigit() }?.ifBlank { "720" } ?: "720"
+                                val fmt = if (match.videoUrl.contains(".m3u8")) "HLS" else "MP4"
+                                listOf(MovieStream(id = "vskit_${match.ep}", resolution = cleanRes, format = fmt, url = match.videoUrl))
+                            } else emptyList()
                         } else {
                             val res = MovieBoxApiClient.fetchPlayStreams(
                                 context = context,
@@ -704,11 +739,18 @@ fun ShortsReelPlayer(
                                 detailPath = item.movie.detailPath,
                                 isShort = true,
                                 season = item.season,
-                                episode = item.episode
+                                episode = item.episode,
+                                customHeaders = item.movie.customHeaders
                             )
-                            val chosen = res.defaultStream ?: res.streams.firstOrNull()
-                            if (chosen != null && chosen.url.isNotBlank()) {
-                                streamCache[cacheKey] = Pair(chosen.url, chosen.format)
+                            res.streams.filter { it.url.isNotBlank() }
+                        }
+
+                        if (streams.isNotEmpty()) {
+                            val highest = streams.maxByOrNull { extractResolutionHeight(it.resolution).toIntOrNull() ?: 0 } ?: streams.firstOrNull()
+                            val qualities = streams.map { formatResolutionDisplay(it.resolution) }.distinct().sortedByDescending { extractResolutionHeight(it).toIntOrNull() ?: 0 }
+                            val bestQuality = highest?.let { formatResolutionDisplay(it.resolution) } ?: qualities.firstOrNull() ?: "1280 × 720"
+                            if (highest != null && highest.url.isNotBlank()) {
+                                streamCache[cacheKey] = CachedShortStream(highest.url, highest.format, streams, qualities, bestQuality)
                             }
                         }
                     } catch (_: Exception) {}
@@ -731,80 +773,188 @@ fun ShortsReelPlayer(
         val targetSubjectId = activeDub?.dubSubjectId?.takeIf { it.isNotBlank() } ?: currentItem.movie.id
         val targetDetailPath = activeDub?.dubDetailPath ?: currentItem.movie.detailPath
 
+        val isVskit = currentItem.movie.isVskitServer ||
+            currentItem.movie.source.equals("vskit", ignoreCase = true) ||
+            currentItem.movie.uploadBy.equals("ShortsTV", ignoreCase = true) ||
+            currentItem.movie.customHeaders.containsKey("X-Site-Domain") ||
+            vskitEpisodes.isNotEmpty() ||
+            currentItem.directStreams.isNotEmpty()
+
         val cacheKey = "${targetSubjectId}_${currentItem.season}_${currentItem.episode}"
         val cached = streamCache[cacheKey]
 
         val streamUrl: String
         val format: String
 
-        val isVskit = currentItem.movie.isVskitServer || currentItem.movie.source.equals("vskit", ignoreCase = true) ||
-            currentItem.movie.uploadBy.equals("ShortsTV", ignoreCase = true) || currentItem.movie.customHeaders.containsKey("X-Site-Domain")
-
-        if (cached != null && cached.first.isNotBlank()) {
-            streamUrl = cached.first
-            format = cached.second
-            isFetchingStream = false
-        } else if (currentItem.directStreamUrl.isNotBlank() && activeDub == null) {
-            streamUrl = currentItem.directStreamUrl
-            format = "MP4"
-            currentEpisodeStreams = emptyList()
-            availableVideoQualities = listOf("1920 × 1080", "1280 × 720", "854 × 480")
-            streamCache[cacheKey] = Pair(streamUrl, format)
-            isFetchingStream = false
-        } else if (isVskit && activeDub == null) {
-            val eps = if (vskitEpisodes.isNotEmpty()) vskitEpisodes else VskitShortsApiClient.fetchShortsEpisodes(currentItem.movie.id)
-            val match = eps.find { it.ep == currentItem.episode } ?: eps.firstOrNull()
-            streamUrl = match?.videoUrl ?: FALLBACK_SHORT_STREAM
-            format = "MP4"
-            currentEpisodeStreams = emptyList()
-            availableVideoQualities = listOf("1920 × 1080", "1280 × 720", "854 × 480")
-            if (streamUrl != FALLBACK_SHORT_STREAM) {
-                streamCache[cacheKey] = Pair(streamUrl, format)
+        if (cached != null && cached.streamUrl.isNotBlank()) {
+            currentEpisodeStreams = cached.streams
+            availableVideoQualities = cached.qualities
+            if (userManualQualityOverride != null && cached.qualities.contains(userManualQualityOverride)) {
+                selectedQuality = userManualQualityOverride!!
+                val digits = extractResolutionHeight(userManualQualityOverride!!)
+                val match = cached.streams.firstOrNull { extractResolutionHeight(it.resolution) == digits }
+                streamUrl = match?.url ?: cached.streamUrl
+                format = match?.format ?: cached.format
+            } else {
+                selectedQuality = cached.selectedQuality
+                streamUrl = cached.streamUrl
+                format = cached.format
             }
             isFetchingStream = false
-        } else if (currentItem.movie.directUrl.isNotBlank() && activeDub == null) {
-            streamUrl = currentItem.movie.directUrl
-            format = "MP4"
-            currentEpisodeStreams = emptyList()
-            availableVideoQualities = listOf("1920 × 1080", "1280 × 720", "854 × 480")
-            streamCache[cacheKey] = Pair(streamUrl, format)
+        } else if (isVskit && activeDub == null) {
+            val resolvedStreams = mutableListOf<MovieStream>()
+
+            // 1. First attempt to use directStreams or pre-fetched vskit episodes
+            val vskitMatch = vskitEpisodes.find { it.ep == currentItem.episode }
+            if (vskitMatch != null && vskitMatch.streams.isNotEmpty()) {
+                resolvedStreams.addAll(vskitMatch.streams.filter { it.url.isNotBlank() })
+            } else if (currentItem.directStreams.isNotEmpty()) {
+                resolvedStreams.addAll(currentItem.directStreams.filter { it.url.isNotBlank() })
+            }
+
+            // 2. Play API with custom headers
+            if (resolvedStreams.isEmpty()) {
+                val vskitPlayResult = MovieBoxApiClient.fetchPlayStreams(
+                    context = context,
+                    subjectId = targetSubjectId,
+                    detailPath = targetDetailPath,
+                    isShort = true,
+                    season = currentItem.season,
+                    episode = currentItem.episode,
+                    customHeaders = currentItem.movie.customHeaders
+                )
+                if (vskitPlayResult.streams.isNotEmpty()) {
+                    resolvedStreams.addAll(vskitPlayResult.streams.filter { it.url.isNotBlank() })
+                }
+            }
+
+            // 3. Fall back to VskitShortsApiClient.fetchShortsEpisodes
+            if (resolvedStreams.isEmpty()) {
+                val eps = if (vskitEpisodes.isNotEmpty()) vskitEpisodes else VskitShortsApiClient.fetchShortsEpisodes(currentItem.movie.id)
+                val match = eps.find { it.ep == currentItem.episode } ?: eps.firstOrNull()
+                if (match != null) {
+                    if (match.streams.isNotEmpty()) {
+                        resolvedStreams.addAll(match.streams.filter { it.url.isNotBlank() })
+                    } else if (match.videoUrl.isNotBlank()) {
+                        val cleanRes = match.resolution.split(",").firstOrNull()?.filter { it.isDigit() }?.ifBlank { "720" } ?: "720"
+                        val fmt = if (match.videoUrl.contains(".m3u8")) "HLS" else "MP4"
+                        resolvedStreams.add(MovieStream(id = "vskit_${match.ep}", resolution = cleanRes, format = fmt, url = match.videoUrl))
+                    }
+                }
+            }
+
+            // 4. Fall back to direct stream url if available
+            if (resolvedStreams.isEmpty() && currentItem.directStreamUrl.isNotBlank()) {
+                val cleanRes = currentItem.defaultResolution.split(",").firstOrNull()?.filter { it.isDigit() }?.ifBlank { "720" } ?: "720"
+                val fmt = if (currentItem.directStreamUrl.contains(".m3u8")) "HLS" else "MP4"
+                resolvedStreams.add(MovieStream(id = "direct_${currentItem.episode}", resolution = cleanRes, format = fmt, url = currentItem.directStreamUrl))
+            }
+
+            currentEpisodeStreams = resolvedStreams
+
+            // VSKIT: ONLY show the FETCHED qualities from resources!
+            val streamQualities = resolvedStreams
+                .filter { it.url.isNotBlank() }
+                .map { s ->
+                    val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() } ?: ""
+                    formatResolutionDisplay(clean)
+                }
+                .distinct()
+                .sortedByDescending { q ->
+                    extractResolutionHeight(q).toIntOrNull() ?: 0
+                }
+
+            availableVideoQualities = if (streamQualities.isNotEmpty()) {
+                streamQualities
+            } else {
+                val fallback = currentItem.defaultResolution.filter { it.isDigit() }.ifBlank { "720" }
+                listOf(formatResolutionDisplay(fallback))
+            }
+
+            // Requirement: Highest fetched quality is default selected
+            val highestStream = resolvedStreams.maxByOrNull { s ->
+                extractResolutionHeight(s.resolution).toIntOrNull() ?: 0
+            } ?: resolvedStreams.firstOrNull()
+
+            val highestQualityDisplay = highestStream?.let { s ->
+                val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() } ?: ""
+                formatResolutionDisplay(clean)
+            } ?: availableVideoQualities.firstOrNull() ?: "1280 × 720"
+
+            val chosenStream: MovieStream?
+            if (userManualQualityOverride != null && availableVideoQualities.contains(userManualQualityOverride)) {
+                val targetDigits = extractResolutionHeight(userManualQualityOverride!!)
+                chosenStream = resolvedStreams.firstOrNull { extractResolutionHeight(it.resolution) == targetDigits } ?: highestStream
+                selectedQuality = userManualQualityOverride!!
+            } else {
+                chosenStream = highestStream
+                selectedQuality = highestQualityDisplay
+            }
+
+            streamUrl = chosenStream?.url?.ifBlank { null } ?: currentItem.directStreamUrl.ifBlank { null } ?: FALLBACK_SHORT_STREAM
+            format = chosenStream?.format ?: if (streamUrl.contains(".m3u8")) "HLS" else "MP4"
+
+            if (streamUrl != FALLBACK_SHORT_STREAM) {
+                streamCache[cacheKey] = CachedShortStream(streamUrl, format, currentEpisodeStreams, availableVideoQualities, selectedQuality)
+            }
             isFetchingStream = false
         } else {
+            // MOVIEBOX / NON-VSKIT
             val streamResult = MovieBoxApiClient.fetchPlayStreams(
                 context = context,
                 subjectId = targetSubjectId,
                 detailPath = targetDetailPath,
                 isShort = true,
                 season = currentItem.season,
-                episode = currentItem.episode
+                episode = currentItem.episode,
+                customHeaders = currentItem.movie.customHeaders
             )
-            currentEpisodeStreams = streamResult.streams
+            val resolvedStreams = streamResult.streams.filter { it.url.isNotBlank() }
+            currentEpisodeStreams = resolvedStreams
 
-            val streamQualities = streamResult.streams.map { s ->
-                val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() }?.ifBlank { "720" } ?: "720"
-                formatResolutionDisplay(clean)
-            }.filter { it.contains("×") }.distinct()
+            // MOVIEBOX: show fetched resource qualities
+            val streamQualities = resolvedStreams
+                .map { s ->
+                    val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() } ?: ""
+                    formatResolutionDisplay(clean)
+                }
+                .distinct()
+                .sortedByDescending { q ->
+                    extractResolutionHeight(q).toIntOrNull() ?: 0
+                }
 
             availableVideoQualities = if (streamQualities.isNotEmpty()) {
                 streamQualities
             } else {
-                listOf("1920 × 1080", "1280 × 720", "854 × 480")
+                val fallback = currentItem.defaultResolution.filter { it.isDigit() }.ifBlank { "720" }
+                listOf(formatResolutionDisplay(fallback))
             }
 
-            val digits = extractResolutionHeight(selectedQuality)
-            val chosenStream = if (digits.isNotBlank()) {
-                streamResult.streams.firstOrNull { s ->
-                    val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() } ?: ""
-                    clean.contains(digits) || digits.contains(clean)
-                } ?: streamResult.defaultStream ?: streamResult.streams.firstOrNull()
+            // Requirement: MovieBox also defaults to highest fetched quality!
+            val highestStream = resolvedStreams.maxByOrNull { s ->
+                extractResolutionHeight(s.resolution).toIntOrNull() ?: 0
+            } ?: streamResult.defaultStream ?: resolvedStreams.firstOrNull()
+
+            val highestQualityDisplay = highestStream?.let { s ->
+                val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() } ?: ""
+                formatResolutionDisplay(clean)
+            } ?: availableVideoQualities.firstOrNull() ?: "1280 × 720"
+
+            val chosenStream: MovieStream?
+            if (userManualQualityOverride != null && availableVideoQualities.contains(userManualQualityOverride)) {
+                val targetDigits = extractResolutionHeight(userManualQualityOverride!!)
+                chosenStream = resolvedStreams.firstOrNull { extractResolutionHeight(it.resolution) == targetDigits } ?: highestStream
+                selectedQuality = userManualQualityOverride!!
             } else {
-                streamResult.defaultStream ?: streamResult.streams.firstOrNull()
+                chosenStream = highestStream
+                selectedQuality = highestQualityDisplay
             }
 
-            streamUrl = chosenStream?.url?.ifBlank { null } ?: FALLBACK_SHORT_STREAM
-            format = chosenStream?.format ?: "MP4"
+            streamUrl = chosenStream?.url?.ifBlank { null } ?: currentItem.directStreamUrl.ifBlank { null } ?: currentItem.movie.directUrl.ifBlank { null } ?: FALLBACK_SHORT_STREAM
+            format = chosenStream?.format ?: if (streamUrl.contains(".m3u8")) "HLS" else "MP4"
+
             if (streamUrl != FALLBACK_SHORT_STREAM) {
-                streamCache[cacheKey] = Pair(streamUrl, format)
+                streamCache[cacheKey] = CachedShortStream(streamUrl, format, currentEpisodeStreams, availableVideoQualities, selectedQuality)
             }
             isFetchingStream = false
         }
@@ -819,6 +969,26 @@ fun ShortsReelPlayer(
             exoPlayer.setMediaSource(fallback)
             exoPlayer.prepare()
             exoPlayer.play()
+        }
+
+        val activeDigits = extractResolutionHeight(selectedQuality)
+        if (activeDigits.isNotBlank()) {
+            val (targetW, targetH) = when (activeDigits) {
+                "2160" -> 3840 to 2160
+                "1440" -> 2560 to 1440
+                "1080" -> 1920 to 1080
+                "720" -> 1280 to 720
+                "480" -> 854 to 480
+                "360" -> 640 to 360
+                else -> 1280 to 720
+            }
+            try {
+                exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                    .buildUpon()
+                    .setMaxVideoSize(targetW, targetH)
+                    .setMinVideoSize(if (activeDigits == "1080" || activeDigits == "2160") 720 else 0, if (activeDigits == "1080" || activeDigits == "2160") 720 else 0)
+                    .build()
+            } catch (_: Exception) {}
         }
     }
 
@@ -1201,38 +1371,47 @@ fun ShortsReelPlayer(
                 currentVideoQuality = selectedQuality,
                 onVideoQualitySelected = { newQuality ->
                     selectedQuality = newQuality
+                    userManualQualityOverride = newQuality
+                    saveQualityPreference(context, newQuality)
                     val digits = extractResolutionHeight(newQuality)
                     val matchedStream = if (digits.isNotBlank()) {
                         currentEpisodeStreams.firstOrNull { s ->
-                            val clean = s.resolution.split(",").firstOrNull()?.filter { it.isDigit() } ?: ""
-                            clean.contains(digits) || digits.contains(clean)
+                            val clean = extractResolutionHeight(s.resolution)
+                            clean == digits || clean.contains(digits) || digits.contains(clean)
                         }
                     } else null
                     val targetStream = matchedStream ?: currentEpisodeStreams.firstOrNull()
                     if (targetStream != null && targetStream.url.isNotBlank()) {
                         val currentPos = exoPlayer.currentPosition
+                        val currentItem = safeList.getOrNull(pagerState.currentPage)
+                        if (currentItem != null) {
+                            val activeDub = availableAudioTracks.find { it.id == currentAudioTrackId && it.isDub }
+                            val targetSubjId = activeDub?.dubSubjectId?.takeIf { it.isNotBlank() } ?: currentItem.movie.id
+                            val cKey = "${targetSubjId}_${currentItem.season}_${currentItem.episode}"
+                            streamCache[cKey] = CachedShortStream(targetStream.url, targetStream.format, currentEpisodeStreams, availableVideoQualities, newQuality)
+                        }
                         val mediaSource = buildShortMediaSource(targetStream.url, targetStream.format)
                         exoPlayer.setMediaSource(mediaSource)
                         exoPlayer.prepare()
                         if (currentPos > 0) exoPlayer.seekTo(currentPos)
                         exoPlayer.play()
-                    } else {
-                        val (targetW, targetH) = when (digits) {
-                            "2160" -> 3840 to 2160
-                            "1440" -> 2560 to 1440
-                            "1080" -> 1920 to 1080
-                            "720" -> 1280 to 720
-                            "480" -> 854 to 480
-                            "360" -> 640 to 360
-                            else -> 1280 to 720
-                        }
-                        try {
-                            exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
-                                .buildUpon()
-                                .setMaxVideoSize(targetW, targetH)
-                                .build()
-                        } catch (_: Exception) {}
                     }
+                    val (targetW, targetH) = when (digits) {
+                        "2160" -> 3840 to 2160
+                        "1440" -> 2560 to 1440
+                        "1080" -> 1920 to 1080
+                        "720" -> 1280 to 720
+                        "480" -> 854 to 480
+                        "360" -> 640 to 360
+                        else -> 1280 to 720
+                    }
+                    try {
+                        exoPlayer.trackSelectionParameters = exoPlayer.trackSelectionParameters
+                            .buildUpon()
+                            .setMaxVideoSize(targetW, targetH)
+                            .setMinVideoSize(if (digits == "1080" || digits == "2160") 720 else 0, if (digits == "1080" || digits == "2160") 720 else 0)
+                            .build()
+                    } catch (_: Exception) {}
                 },
                 availableAudioTracks = availableAudioTracks,
                 currentAudioTrackId = currentAudioTrackId,
@@ -1268,7 +1447,9 @@ fun ShortsReelPlayer(
                                     if (matched != null && matched.url.isNotBlank()) {
                                         currentEpisodeStreams = validStreams
                                         val cacheKey = "${effectiveSubjId}_${currentSeason}_${currentEp}"
-                                        streamCache[cacheKey] = Pair(matched.url, matched.format)
+                                        val dubQualities = validStreams.map { formatResolutionDisplay(it.resolution) }.distinct().sortedByDescending { extractResolutionHeight(it).toIntOrNull() ?: 0 }
+                                        val matchedQuality = formatResolutionDisplay(matched.resolution)
+                                        streamCache[cacheKey] = CachedShortStream(matched.url, matched.format, validStreams, dubQualities, matchedQuality)
                                         withContext(Dispatchers.Main) {
                                             val mediaSource = buildShortMediaSource(matched.url, matched.format)
                                             exoPlayer.setMediaSource(mediaSource)

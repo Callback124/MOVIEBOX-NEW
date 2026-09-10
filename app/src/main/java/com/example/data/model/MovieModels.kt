@@ -12,7 +12,8 @@ data class VskitEpisodeItem(
     val coverUrl: String,
     val durationSec: Int = 0,
     val resolution: String = "480",
-    val title: String = ""
+    val title: String = "",
+    val streams: List<MovieStream> = emptyList()
 )
 
 data class MovieItem(

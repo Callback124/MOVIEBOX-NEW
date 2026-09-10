@@ -746,7 +746,8 @@ object MovieBoxApiClient {
         detailPath: String = "",
         isShort: Boolean = false,
         season: Int? = null,
-        episode: Int? = null
+        episode: Int? = null,
+        customHeaders: Map<String, String> = emptyMap()
     ): StreamPlayResult = withContext(Dispatchers.IO) {
         if (subjectId.isBlank() && detailPath.isBlank()) return@withContext StreamPlayResult()
 
@@ -779,7 +780,7 @@ object MovieBoxApiClient {
         val reqSeason = season ?: if (isShort) 1 else 0
         val reqEpisode = episode ?: if (isShort) 1 else 0
 
-        val firstResult = executePlayRequest(context, realSubjectId, effectiveDetailPath, reqSeason, reqEpisode)
+        val firstResult = executePlayRequest(context, realSubjectId, effectiveDetailPath, reqSeason, reqEpisode, customHeaders)
         if (firstResult.hasResource && firstResult.streams.isNotEmpty()) {
             return@withContext firstResult
         }
@@ -788,13 +789,13 @@ object MovieBoxApiClient {
         // If first attempt used se != 0 or ep != 0 (e.g. series or mistakenly flagged as series),
         // try movie format: se=0&ep=0
         if (reqSeason != 0 || reqEpisode != 0) {
-            val movieResult = executePlayRequest(context, realSubjectId, effectiveDetailPath, 0, 0)
+            val movieResult = executePlayRequest(context, realSubjectId, effectiveDetailPath, 0, 0, customHeaders)
             if (movieResult.hasResource && movieResult.streams.isNotEmpty()) {
                 return@withContext movieResult
             }
         } else {
             // If first attempt used se=0&ep=0, but had no stream resources, try se=1&ep=1
-            val seriesResult = executePlayRequest(context, realSubjectId, effectiveDetailPath, 1, 1)
+            val seriesResult = executePlayRequest(context, realSubjectId, effectiveDetailPath, 1, 1, customHeaders)
             if (seriesResult.hasResource && seriesResult.streams.isNotEmpty()) {
                 return@withContext seriesResult
             }
@@ -809,7 +810,8 @@ object MovieBoxApiClient {
         subjectId: String,
         detailPath: String,
         season: Int,
-        episode: Int
+        episode: Int,
+        customHeaders: Map<String, String> = emptyMap()
     ): StreamPlayResult {
         val baseUrls = listOf(PLAY_URL, PLAY_URL_FALLBACK)
         var lastResult = StreamPlayResult()
@@ -851,6 +853,21 @@ object MovieBoxApiClient {
                         .header("x-client-info", CLIENT_INFO)
                         .header("x-request-lang", REQUEST_LANG)
                         .header("x-source", "")
+
+                    if (customHeaders.isNotEmpty()) {
+                        for ((k, v) in customHeaders) {
+                            reqBuilder.header(k, v)
+                        }
+                    }
+                    val isVskit = customHeaders.containsKey("X-Site-Domain") ||
+                        customHeaders["X-Site-Type"] == "VskitWeb" ||
+                        trimmedPath.contains("vskit", ignoreCase = true)
+                    if (isVskit) {
+                        if (!customHeaders.containsKey("X-Site-Domain")) reqBuilder.header("X-Site-Domain", "https://vskit.online")
+                        if (!customHeaders.containsKey("X-Site-Type")) reqBuilder.header("X-Site-Type", "VskitWeb")
+                        reqBuilder.header("X-PM-Level", "3")
+                        reqBuilder.header("X-PM-Active", "true")
+                    }
 
                     if (useAuth) {
                         reqBuilder.header("authorization", AUTH_TOKEN)

@@ -5,6 +5,7 @@ import com.example.data.model.CategorySection
 import com.example.data.model.HeroBanner
 import com.example.data.model.HomeFeedData
 import com.example.data.model.MovieItem
+import com.example.data.model.MovieStream
 import com.example.data.model.VskitEpisodeItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -201,7 +202,49 @@ object VskitShortsApiClient {
                     val coverObj = itObj.optJSONObject("cover")
                     val coverUrl = coverObj?.optString("url", "") ?: ""
 
+                    // Extract all explicit video streams if present in videoObj or itObj
+                    val episodeStreams = mutableListOf<MovieStream>()
+                    val streamArrays = listOfNotNull(
+                        videoObj?.optJSONArray("videoAddressList"),
+                        videoObj?.optJSONArray("videoAddresses"),
+                        videoObj?.optJSONArray("streams"),
+                        itObj.optJSONArray("videoAddressList"),
+                        itObj.optJSONArray("streams")
+                    )
+                    for (arr in streamArrays) {
+                        for (s in 0 until arr.length()) {
+                            val sObj = arr.optJSONObject(s) ?: continue
+                            val sUrl = sObj.optString("url", "")
+                            if (sUrl.isNotBlank()) {
+                                val resRaw = sObj.optString("resolution")
+                                    .ifBlank { sObj.optString("resolutions") }
+                                    .ifBlank { sObj.optInt("resolution", 0).takeIf { it > 0 }?.toString() ?: "720" }
+                                val cleanRes = resRaw.split(",").firstOrNull()?.filter { it.isDigit() }?.ifBlank { "720" } ?: "720"
+                                episodeStreams.add(
+                                    MovieStream(
+                                        id = "vskit_ep${ep}_stream_$s",
+                                        resolution = cleanRes,
+                                        format = sObj.optString("format", if (sUrl.contains(".m3u8")) "HLS" else "MP4"),
+                                        url = sUrl
+                                    )
+                                )
+                            }
+                        }
+                    }
+
                     if (videoUrl.isNotBlank()) {
+                        val cleanMainRes = resolutions.split(",").firstOrNull()?.filter { it.isDigit() }?.ifBlank { "720" } ?: "720"
+                        if (episodeStreams.none { it.url == videoUrl }) {
+                            episodeStreams.add(
+                                MovieStream(
+                                    id = "vskit_ep${ep}_main",
+                                    resolution = cleanMainRes,
+                                    format = if (videoUrl.contains(".m3u8")) "HLS" else "MP4",
+                                    url = videoUrl
+                                )
+                            )
+                        }
+
                         episodes.add(
                             VskitEpisodeItem(
                                 ep = ep,
@@ -210,7 +253,10 @@ object VskitShortsApiClient {
                                 coverUrl = coverUrl,
                                 durationSec = duration,
                                 resolution = resolutions,
-                                title = "Episode $ep"
+                                title = "Episode $ep",
+                                streams = episodeStreams.sortedByDescending { s ->
+                                    s.resolution.filter { it.isDigit() }.toIntOrNull() ?: 0
+                                }
                             )
                         )
                     }
