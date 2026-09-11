@@ -70,4 +70,16 @@ class ExampleRobolectricTest {
     org.junit.Assert.assertFalse("Viral Sports Shorts must NOT be shorts section", viralSportsShorts.isHotShortTvSection)
     org.junit.Assert.assertFalse("Popular Series must NOT be shorts section", regularSection.isHotShortTvSection)
   }
+
+  @Test
+  fun testDownloadHelpers() {
+    assertEquals("0 KB/s", com.example.data.download.MovieDownloadManager.formatSpeed(0))
+    assertEquals("500 B/s", com.example.data.download.MovieDownloadManager.formatSpeed(500))
+    assertEquals("1024 KB/s", com.example.data.download.MovieDownloadManager.formatSpeed(1024 * 1024))
+    
+    assertEquals("0 MB", com.example.data.download.MovieDownloadManager.formatBytes(0))
+    assertEquals("500 B", com.example.data.download.MovieDownloadManager.formatBytes(500))
+    assertEquals("1024 KB", com.example.data.download.MovieDownloadManager.formatBytes(1024 * 1024))
+    assertEquals("1.0 MB", com.example.data.download.MovieDownloadManager.formatBytes(1048576))
+  }
 }

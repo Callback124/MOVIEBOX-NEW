@@ -414,7 +414,7 @@ private fun DownloadingItemCard(
                             text = when (item.status) {
                                 DownloadStatus.DOWNLOADING -> "Downloading..."
                                 DownloadStatus.PAUSED -> "Paused"
-                                DownloadStatus.FAILED -> "Failed"
+                                DownloadStatus.FAILED -> if (!item.errorMessage.isNullOrBlank()) "Failed: ${item.errorMessage}" else "Failed (Tap retry)"
                                 else -> "Waiting..."
                             },
                             color = when (item.status) {
@@ -424,7 +424,10 @@ private fun DownloadingItemCard(
                                 else -> Color(0xFF94A3B8)
                             },
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
 
                         if (item.status == DownloadStatus.DOWNLOADING && item.speedFormatted.isNotBlank()) {
@@ -463,6 +466,18 @@ private fun DownloadingItemCard(
                                 contentDescription = "Pause",
                                 tint = Color.White,
                                 modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    } else if (item.status == DownloadStatus.FAILED) {
+                        IconButton(
+                            onClick = onResume,
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Retry download",
+                                tint = MovieBoxRed,
+                                modifier = Modifier.size(22.dp)
                             )
                         }
                     } else {

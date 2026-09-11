@@ -95,8 +95,10 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import android.net.Uri
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
@@ -164,33 +166,38 @@ private fun formatShortTime(millis: Long): String {
 }
 
 @OptIn(UnstableApi::class)
-private fun buildShortMediaSource(streamUrl: String, format: String): MediaSource {
+private fun buildShortMediaSource(context: Context, streamUrl: String, format: String): MediaSource {
+    val isLocal = streamUrl.startsWith("/") || streamUrl.startsWith("file:")
+    val uri = if (streamUrl.startsWith("/")) Uri.fromFile(java.io.File(streamUrl)) else Uri.parse(streamUrl)
+
     val httpDataSourceFactory = DefaultHttpDataSource.Factory()
         .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
         .setDefaultRequestProperties(
             mapOf(
                 "Referer" to "https://movieboxph.org/",
-                "Origin" to "https://movieboxph.org"
+                "Origin" to "https://movieboxph.org",
+                "Accept" to "*/*"
             )
         )
         .setAllowCrossProtocolRedirects(true)
         .setConnectTimeoutMs(15_000)
         .setReadTimeoutMs(20_000)
 
-    val mediaItem = MediaItem.fromUri(streamUrl)
+    val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+    val mediaItem = MediaItem.fromUri(uri)
     val upper = format.uppercase()
     return when {
-        upper.contains("M3U8") || upper.contains("HLS") || streamUrl.contains(".m3u8") -> {
-            HlsMediaSource.Factory(httpDataSourceFactory)
+        !isLocal && (upper.contains("M3U8") || upper.contains("HLS") || streamUrl.contains(".m3u8")) -> {
+            HlsMediaSource.Factory(dataSourceFactory)
                 .setAllowChunklessPreparation(true)
                 .createMediaSource(mediaItem)
         }
-        upper.contains("MPD") || upper.contains("DASH") || streamUrl.contains(".mpd") -> {
-            DashMediaSource.Factory(httpDataSourceFactory)
+        !isLocal && (upper.contains("MPD") || upper.contains("DASH") || streamUrl.contains(".mpd")) -> {
+            DashMediaSource.Factory(dataSourceFactory)
                 .createMediaSource(mediaItem)
         }
         else -> {
-            ProgressiveMediaSource.Factory(httpDataSourceFactory)
+            ProgressiveMediaSource.Factory(dataSourceFactory)
                 .createMediaSource(mediaItem)
         }
     }
@@ -356,6 +363,7 @@ fun ShortsReelPlayer(
     var currentDubs by remember(movie.id, detailedInfo) {
         mutableStateOf(detailedInfo?.dubs?.ifEmpty { null } ?: movie.dubs)
     }
+    var activePlayingStreamUrl by remember { mutableStateOf("") }
 
     LaunchedEffect(movie.id, movie.detailPath, movie.isVskitServer) {
         val isVskit = movie.isVskitServer || movie.source.equals("vskit", ignoreCase = true) ||
@@ -563,6 +571,9 @@ fun ShortsReelPlayer(
             showPlayPauseIndicator = true
             areControlsVisible = true
         } else {
+            if (exoPlayer.playbackState == Player.STATE_ENDED) {
+                exoPlayer.seekTo(0)
+            }
             exoPlayer.play()
             isPlaying = true
             showPlayPauseIndicator = true
@@ -648,15 +659,17 @@ fun ShortsReelPlayer(
                     }
                     Player.STATE_ENDED -> {
                         isBuffering = false
+                        currentPositionMs = if (durationMs > 0) durationMs else exoPlayer.duration.coerceAtLeast(0L)
                         // AUTO PLAY NEXT EPISODE WITH SMOOTH SCROLL ANIMATION (Reel Style!)
                         scope.launch {
                             val nextIndex = pagerState.currentPage + 1
                             if (nextIndex < safeList.size) {
                                 pagerState.animateScrollToPage(nextIndex)
                             } else {
-                                // Replay from start if at the end of playlist/episodes
-                                exoPlayer.seekTo(0)
-                                exoPlayer.play()
+                                // Last episode completed: pause shorts player, matching MovieBox's player behavior
+                                isPlaying = false
+                                exoPlayer.pause()
+                                areControlsVisible = true
                             }
                         }
                     }
@@ -678,7 +691,7 @@ fun ShortsReelPlayer(
                 isBuffering = false
                 scope.launch {
                     try {
-                        val fallback = buildShortMediaSource(FALLBACK_SHORT_STREAM, "MP4")
+                        val fallback = buildShortMediaSource(context, FALLBACK_SHORT_STREAM, "MP4")
                         exoPlayer.setMediaSource(fallback)
                         exoPlayer.prepare()
                         exoPlayer.play()
@@ -952,6 +965,9 @@ fun ShortsReelPlayer(
 
             streamUrl = chosenStream?.url?.ifBlank { null } ?: currentItem.directStreamUrl.ifBlank { null } ?: currentItem.movie.directUrl.ifBlank { null } ?: FALLBACK_SHORT_STREAM
             format = chosenStream?.format ?: if (streamUrl.contains(".m3u8")) "HLS" else "MP4"
+            if (streamUrl != FALLBACK_SHORT_STREAM) {
+                activePlayingStreamUrl = streamUrl
+            }
 
             if (streamUrl != FALLBACK_SHORT_STREAM) {
                 streamCache[cacheKey] = CachedShortStream(streamUrl, format, currentEpisodeStreams, availableVideoQualities, selectedQuality)
@@ -960,12 +976,12 @@ fun ShortsReelPlayer(
         }
 
         try {
-            val mediaSource = buildShortMediaSource(streamUrl, format)
+            val mediaSource = buildShortMediaSource(context, streamUrl, format)
             exoPlayer.setMediaSource(mediaSource)
             exoPlayer.prepare()
             exoPlayer.play()
         } catch (_: Exception) {
-            val fallback = buildShortMediaSource(FALLBACK_SHORT_STREAM, "MP4")
+            val fallback = buildShortMediaSource(context, FALLBACK_SHORT_STREAM, "MP4")
             exoPlayer.setMediaSource(fallback)
             exoPlayer.prepare()
             exoPlayer.play()
@@ -1390,7 +1406,7 @@ fun ShortsReelPlayer(
                             val cKey = "${targetSubjId}_${currentItem.season}_${currentItem.episode}"
                             streamCache[cKey] = CachedShortStream(targetStream.url, targetStream.format, currentEpisodeStreams, availableVideoQualities, newQuality)
                         }
-                        val mediaSource = buildShortMediaSource(targetStream.url, targetStream.format)
+                        val mediaSource = buildShortMediaSource(context, targetStream.url, targetStream.format)
                         exoPlayer.setMediaSource(mediaSource)
                         exoPlayer.prepare()
                         if (currentPos > 0) exoPlayer.seekTo(currentPos)
@@ -1451,7 +1467,7 @@ fun ShortsReelPlayer(
                                         val matchedQuality = formatResolutionDisplay(matched.resolution)
                                         streamCache[cacheKey] = CachedShortStream(matched.url, matched.format, validStreams, dubQualities, matchedQuality)
                                         withContext(Dispatchers.Main) {
-                                            val mediaSource = buildShortMediaSource(matched.url, matched.format)
+                                            val mediaSource = buildShortMediaSource(context, matched.url, matched.format)
                                             exoPlayer.setMediaSource(mediaSource)
                                             exoPlayer.prepare()
                                             if (currentPos > 0) exoPlayer.seekTo(currentPos)
@@ -1490,8 +1506,10 @@ fun ShortsReelPlayer(
             val currentItem = safeList.getOrNull(pagerState.currentPage)
             if (currentItem != null) {
                 val vskitItem = vskitEpisodes.find { it.ep == currentItem.episode }
-                val resolvedStreamUrl = currentItem.directStreamUrl.ifBlank {
-                    vskitItem?.videoUrl ?: ""
+                val resolvedStreamUrl = activePlayingStreamUrl.ifBlank {
+                    currentItem.directStreamUrl.ifBlank {
+                        vskitItem?.videoUrl ?: ""
+                    }
                 }
                 val streamsForDownload = if (currentEpisodeStreams.isNotEmpty()) {
                     currentEpisodeStreams
@@ -1528,31 +1546,23 @@ fun ShortsReelPlayer(
                                 currentEpisodeStreams.firstOrNull()?.url ?: currentItem.movie.directUrl
                             }
                         }
-                        if (finalUrl.isNotBlank()) {
-                            val downloadManager = MovieDownloadManager.getInstance(context)
-                            downloadManager.startDownload(
-                                movie = currentItem.movie.copy(
-                                    title = "${currentItem.title} Ep ${currentItem.episode}"
-                                ),
-                                quality = quality,
-                                downloadUrl = finalUrl,
-                                dubLabel = "Original",
-                                seasonNumber = currentItem.season,
-                                episodeNumber = currentItem.episode,
-                                isSeries = true
-                            )
-                            Toast.makeText(
-                                context,
-                                "Download started: Ep ${currentItem.episode} ($quality)",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        } else {
-                            Toast.makeText(
-                                context,
-                                "Episode video not ready yet",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
+                        val downloadManager = MovieDownloadManager.getInstance(context)
+                        downloadManager.startDownload(
+                            movie = currentItem.movie.copy(
+                                title = "${currentItem.title} Ep ${currentItem.episode}"
+                            ),
+                            quality = quality,
+                            downloadUrl = finalUrl,
+                            dubLabel = "Original",
+                            seasonNumber = currentItem.season,
+                            episodeNumber = currentItem.episode,
+                            isSeries = true
+                        )
+                        Toast.makeText(
+                            context,
+                            "Download started: Ep ${currentItem.episode} ($quality)",
+                            Toast.LENGTH_SHORT
+                        ).show()
                         showDownloadDialog = false
                     }
                 )
